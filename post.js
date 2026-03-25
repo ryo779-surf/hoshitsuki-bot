@@ -1,5 +1,11 @@
 const { TwitterApi } = require('twitter-api-v2');
 
+console.log('=== 星月占いBot 起動 ===');
+console.log('API Key exists:', !!process.env.X_API_KEY);
+console.log('API Secret exists:', !!process.env.X_API_SECRET);
+console.log('Access Token exists:', !!process.env.X_ACCESS_TOKEN);
+console.log('Access Token Secret exists:', !!process.env.X_ACCESS_TOKEN_SECRET);
+
 const client = new TwitterApi({
   appKey: process.env.X_API_KEY,
   appSecret: process.env.X_API_SECRET,
@@ -47,22 +53,32 @@ function today() {
 
 async function main() {
   const seed = today();
+  console.log('日付シード:', seed);
   const m = parseInt(String(seed).slice(4,6));
   const day = parseInt(String(seed).slice(6,8));
   const rw = client.readWrite;
-  for (let i = 0; i < SIGNS.length; i++) {
-    const s = SIGNS[i];
-    const r = rng(seed + i * 137);
-    const msg = MSGS[Math.floor(r() * MSGS.length)];
-    const color = s.lucky_color[Math.floor(r() * s.lucky_color.length)];
-    const item = ITEMS[Math.floor(r() * ITEMS.length)];
-    const stars = '★'.repeat(Math.floor(r() * 3) + 3) + '☆'.repeat(2 - Math.floor(r() * 3));
-    const text = s.emoji + ' ' + s.name + '（' + m + '月' + day + '日）\n今日の運勢 ' + stars + '\n\n' + msg + '\n\nラッキー: ' + color + '・' + item + '\n\n🔮 詳しい鑑定はプロフのリンクから\n#今日の運勢 #星占い #タロット #星月占い';
-    try {
-      await rw.v2.tweet(text);
-      console.log('✓ ' + s.name);
-      await new Promise(r => setTimeout(r, 3000));
-    } catch(e) { console.error('✗ ' + s.name + ': ' + e.message); }
+
+  // まず1星座だけテスト投稿
+  const s = SIGNS[0];
+  const r = rng(seed);
+  const msg = MSGS[Math.floor(r() * MSGS.length)];
+  const color = s.lucky_color[Math.floor(r() * s.lucky_color.length)];
+  const item = ITEMS[Math.floor(r() * ITEMS.length)];
+  const stars = '★'.repeat(Math.floor(r() * 3) + 3) + '☆'.repeat(2);
+  const text = s.emoji + ' ' + s.name + '（' + m + '月' + day + '日）\n今日の運勢 ' + stars + '\n\n' + msg + '\n\nラッキー: ' + color + '・' + item + '\n\n🔮 詳しい鑑定 → https://hoshitsuki-uranai.netlify.app/\n#今日の運勢 #星占い #タロット #星月占い';
+
+  console.log('投稿内容プレビュー:');
+  console.log(text);
+  console.log('---');
+
+  try {
+    const result = await rw.v2.tweet(text);
+    console.log('✓ 投稿成功! ID:', result.data.id);
+  } catch(e) {
+    console.error('✗ 投稿失敗:', e.message);
+    console.error('エラー詳細:', JSON.stringify(e.data || e, null, 2));
+    process.exit(1);
   }
 }
+
 main();
