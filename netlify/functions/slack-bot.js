@@ -149,20 +149,10 @@ exports.handler = async (event) => {
   const subCmd  = parts[0] || "";
   const args    = parts.slice(1).join(" ");
 
-  try {
-    const response = await handleCommand(subCmd, args, userId);
-    // Slack slash commandへの即時応答（3秒以内）
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ response_type: "ephemeral", text: response }),
-    };
-  } catch (err) {
-    console.error("Error:", err);
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ response_type: "ephemeral", text: `:warning: エラーが発生しました: ${err.message}` }),
-    };
-  }
-};
+// タイムアウト回避：即座に返答してバックグラウンドで処理
+  handleCommand(subCmd, args, userId).catch(console.error);
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response_type: "ephemeral", text: ":hourglass: 生成中... チャンネルに投稿します！" }),
+  };
