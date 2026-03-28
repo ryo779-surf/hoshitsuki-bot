@@ -1,20 +1,3 @@
-/**
- * 星月占い — Slack Slash Command Handler
- * Netlify Functions にデプロイして使用する
- *
- * 対応コマンド:
- *   /hoshi レポート      → 即座に週次レポートを生成・投稿
- *   /hoshi 占い [テーマ]  → 占いコンテンツを生成してSlackに投稿
- *   /hoshi タスク [内容]  → タスクをチャンネルに追加
- *   /hoshi ヘルプ        → コマンド一覧を表示
- *
- * 必要な環境変数 (Netlify Site Settings > Environment Variables):
- *   ANTHROPIC_API_KEY
- *   SLACK_BOT_TOKEN
- *   SLACK_CHANNEL_ID
- *   SLACK_SIGNING_SECRET   ← Slackからのリクエスト検証に使用
- */
-
 const crypto = require("crypto");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -22,23 +5,18 @@ const SLACK_BOT_TOKEN   = process.env.SLACK_BOT_TOKEN;
 const SLACK_CHANNEL_ID  = process.env.SLACK_CHANNEL_ID;
 const SIGNING_SECRET    = process.env.SLACK_SIGNING_SECRET;
 
-// ── Slackリクエストの署名検証 ──────────────────────────────
 function verifySlackRequest(headers, rawBody) {
-  const timestamp  = headers["x-slack-request-timestamp"];
-  const signature  = headers["x-slack-signature"];
+  const timestamp = headers["x-slack-request-timestamp"];
+  const signature = headers["x-slack-signature"];
   if (!timestamp || !signature) return false;
-
-  // リプレイ攻撃防止（5分以上古いリクエストは拒否）
   if (Math.abs(Date.now() / 1000 - parseInt(timestamp)) > 300) return false;
-
   const baseStr  = `v0:${timestamp}:${rawBody}`;
-  const expected = "v0=" + crypto.createHmac("sha256", SIGNING_SECRET)
-                                 .update(baseStr)
-                                 .digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  const expected = "v0=" + crypto.createHmac("sha256", SIGNING_SECRET).update(baseStr).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch { return false; }
 }
 
-// ── Claude API 呼び出し ───────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -55,104 +33,96 @@ async function callClaude(systemPrompt, userMessage) {
     }),
   });
   const data = await res.json();
-  return data.content[0].text;
+  return data.content.filter(b => b.type === "text").map(b => b.text).join("\n").trim();
 }
 
-// ── Slackに投稿 ──────────────────────────────────────────
-async function postToSlack(text, channel = SLACK_CHANNEL_ID) {
+async function postToSlack(text) {
   await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${SLACK_BOT_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ channel, text }),
+    headers: { "Authorization": `Bearer ${SLACK_BOT_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ channel: SLACK_CHANNEL_ID, text }),
   });
 }
 
-// ── コマンドハンドラ ─────────────────────────────────────
-async function handleCommand(subCommand, args, userId) {
-
-  // /hoshi ヘルプ
-  if (subCommand === "ヘルプ" || subCommand === "help" || !subCommand) {
-    return `:star2: *星月占いエージェント — コマンド一覧*
-
-\`/hoshi レポート\` — 週次レポートを今すぐ生成して投稿
-\`/hoshi 占い [テーマ]\` — 占いコンテンツを生成（例: /hoshi 占い 仕事運）
-\`/hoshi タスク [内容]\` — タスクを追加（例: /hoshi タスク Instagram投稿を3本作る）
-\`/hoshi ヘルプ\` — このヘルプを表示`;
-  }
-
-  // /hoshi レポート
-  if (subCommand === "レポート") {
-    // 非同期で生成・投稿（Slackは3秒以内に応答が必要なため即時返答→後で投稿）
-    const system = `あなたは「星月占い（AIタロット占いサービス）」の事業エージェントです。`;
-    const prompt = `<@${userId}> さんのリクエストで週次レポートを生成します。
-現在の事業状況（Netlify/LINE/Stripe/X投稿 稼働中、Instagram API未連携）を踏まえ、
-Slack向けの週次チェックレポートを生成してください。
-冒頭に「<@${userId}> さんリクエストのレポートです！」と入れてください。`;
-
-    const report = await callClaude(system, prompt);
-    await postToSlack(report);
-    return ":hourglass: レポートを生成して投稿しました！";
-  }
-
-  // /hoshi 占い [テーマ]
-  if (subCommand === "占い") {
-    const theme = args || "今週の運勢";
-    const system = `あなたは「星月占い」サービスのコンテンツライターです。
-AIタロット占いのコンテンツをSNS投稿用に作成してください。
-ターゲットは占い好きの日本人女性。神秘的でポジティブなトーンで。`;
-    const prompt = `「${theme}」をテーマにしたタロット占いコンテンツを作成してください。
-X(Twitter)投稿用（140文字以内）とInstagram用（200〜300文字）の2パターンを出力。`;
-
-    const content = await callClaude(system, prompt);
-    await postToSlack(`:crystal_ball: *占いコンテンツ生成結果 — テーマ: ${theme}*\n\n${content}`);
-    return ":hourglass: コンテンツを生成して投稿しました！";
-  }
-
-  // /hoshi タスク [内容]
-  if (subCommand === "タスク") {
-    if (!args) return "タスク内容を入力してください。例: `/hoshi タスク Instagram投稿を3本作る`";
-    const now  = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-    await postToSlack(`:white_check_mark: *新規タスク追加* (${now})\n<@${userId}> より\n\n> ${args}`);
-    return ":white_check_mark: タスクを追加しました！";
-  }
-
-  return `不明なコマンド: ${subCommand}\n\`/hoshi ヘルプ\` でコマンド一覧を確認してください。`;
+// response_url に結果を返す（Slack推奨の遅延レスポンス方式）
+async function replyToSlack(responseUrl, text) {
+  await fetch(responseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response_type: "ephemeral", text }),
+  });
 }
 
-// ── Netlify Function エントリーポイント ────────────────────
+async function handleCommand(subCmd, args, userId, responseUrl) {
+  const SYSTEM_BASE = `あなたは「星月占い（AIタロット占いサービス）」の事業エージェントです。ターゲットは占い好きの日本人女性層。`;
+
+  if (!subCmd || subCmd === "ヘルプ" || subCmd === "help") {
+    await replyToSlack(responseUrl,
+      `:star2: *星月占いエージェント — コマンド一覧*\n\n` +
+      "`/hoshi レポート` — 週次レポートを今すぐ生成・投稿\n" +
+      "`/hoshi 占い [テーマ]` — SNSコンテンツを生成（例: /hoshi 占い 仕事運）\n" +
+      "`/hoshi タスク [内容]` — タスクを追加\n" +
+      "`/hoshi ヘルプ` — このヘルプを表示"
+    );
+    return;
+  }
+
+  if (subCmd === "レポート") {
+    const report = await callClaude(SYSTEM_BASE,
+      `<@${userId}> さんのリクエストで週次レポートを生成します。現在の事業状況（Netlify/LINE/Stripe/X投稿 稼働中、Instagram API未連携）を踏まえ、今週の優先タスクと改善アドバイスを含むSlack用レポートを作成してください。`
+    );
+    await postToSlack(report);
+    await replyToSlack(responseUrl, ":white_check_mark: レポートをチャンネルに投稿しました！");
+    return;
+  }
+
+  if (subCmd === "占い") {
+    const theme = args || "今週の運勢";
+    const content = await callClaude(SYSTEM_BASE,
+      `「${theme}」をテーマにしたタロット占いコンテンツを作成してください。X(Twitter)用（140文字以内）とInstagram用（200〜300文字）の2パターンを出力。`
+    );
+    await postToSlack(`:crystal_ball: *占いコンテンツ — テーマ: ${theme}*\n\n${content}`);
+    await replyToSlack(responseUrl, ":white_check_mark: コンテンツをチャンネルに投稿しました！");
+    return;
+  }
+
+  if (subCmd === "タスク") {
+    if (!args) { await replyToSlack(responseUrl, "タスク内容を入力してください。例: `/hoshi タスク Instagram投稿を3本作る`"); return; }
+    const now = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+    await postToSlack(`:white_check_mark: *新規タスク* (${now})\n<@${userId}> より\n\n> ${args}`);
+    await replyToSlack(responseUrl, ":white_check_mark: タスクを追加しました！");
+    return;
+  }
+
+  await replyToSlack(responseUrl, `不明なコマンド: ${subCmd}\n\`/hoshi ヘルプ\` でコマンド一覧を確認してください。`);
+}
+
 exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
-  }
+  if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+  if (!verifySlackRequest(event.headers, event.body)) return { statusCode: 401, body: "Unauthorized" };
 
-  const rawBody = event.body;
-
-  // Slack 署名検証
-  if (!verifySlackRequest(event.headers, rawBody)) {
-    return { statusCode: 401, body: "Unauthorized" };
-  }
-
-  // URLデコード
-  const params = Object.fromEntries(new URLSearchParams(rawBody));
-
-  // Slack URL Verification (初回設定時)
+  const params = Object.fromEntries(new URLSearchParams(event.body));
   if (params.type === "url_verification") {
     return { statusCode: 200, body: JSON.stringify({ challenge: params.challenge }) };
   }
 
-  const text    = (params.text || "").trim();
-  const userId  = params.user_id || "unknown";
-  const parts   = text.split(/\s+/);
-  const subCmd  = parts[0] || "";
-  const args    = parts.slice(1).join(" ");
+  const text        = (params.text || "").trim();
+  const userId      = params.user_id || "unknown";
+  const responseUrl = params.response_url;
+  const parts       = text.split(/\s+/);
+  const subCmd      = parts[0] || "";
+  const args        = parts.slice(1).join(" ");
 
-// タイムアウト回避：即座に返答してバックグラウンドで処理
-  handleCommand(subCmd, args, userId).catch(console.error);
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ response_type: "ephemeral", text: ":hourglass: 生成中... チャンネルに投稿します！" }),
-  };
+  // Slackに即座に200を返しつつ、処理を続行
+  const processing = handleCommand(subCmd, args, userId, responseUrl).catch(async (err) => {
+    console.error("Error:", err);
+    if (responseUrl) {
+      await replyToSlack(responseUrl, `:warning: エラーが発生しました: ${err.message}`);
+    }
+  });
+
+  // Netlifyがawaitしないと処理が死ぬのでwaitAll
+  await processing;
+
+  return { statusCode: 200, body: "" };
+};
